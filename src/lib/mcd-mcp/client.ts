@@ -32,18 +32,21 @@ function getConfig() {
   };
 }
 
-function parseEventStream(body: string) {
+function parseEventStream(body: string, expectedId?: number) {
   const payloads = body
     .split(/\r?\n/)
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trim())
     .filter((line) => line && line !== "[DONE]");
-  const lastPayload = payloads.at(-1);
-  if (!lastPayload) throw new Error("MCP server returned an empty event stream");
-  return JSON.parse(lastPayload) as JsonRpcResponse<unknown>;
+  const messages = payloads.map((payload) => JSON.parse(payload) as JsonRpcResponse<unknown>);
+  const matched =
+    expectedId === undefined ? undefined : messages.find((message) => message.id === expectedId);
+  const message = matched ?? messages.at(-1);
+  if (!message) throw new Error("MCP server returned an empty event stream");
+  return message;
 }
 
-async function readRpcResponse(response: Response) {
+async function readRpcResponse(response: Response, expectedId?: number) {
   const body = await response.text();
   if (!response.ok) {
     throw new Error(`MCP request failed (${response.status}): ${body.slice(0, 240)}`);
@@ -51,7 +54,7 @@ async function readRpcResponse(response: Response) {
   if (!body) return null;
   const contentType = response.headers.get("content-type") ?? "";
   const rpc = contentType.includes("text/event-stream")
-    ? parseEventStream(body)
+    ? parseEventStream(body, expectedId)
     : (JSON.parse(body) as JsonRpcResponse<unknown>);
   if (rpc.error) throw new Error(`MCP error ${rpc.error.code}: ${rpc.error.message}`);
   return rpc;
@@ -77,7 +80,10 @@ async function postRpc(
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),
   });
-  const rpc = await readRpcResponse(response);
+  const rpc = await readRpcResponse(
+    response,
+    typeof payload.id === "number" ? payload.id : undefined,
+  );
   return { rpc, sessionId: response.headers.get("Mcp-Session-Id") ?? sessionId };
 }
 
@@ -93,8 +99,6 @@ export async function callMcdTool(name: McdReadTool, args: Record<string, unknow
       clientInfo: { name: "mcremote", version: "0.2.0" },
     },
   });
-  if (!initialized.sessionId) throw new Error("MCP server did not issue a session id");
-
   await postRpc(
     endpoint,
     token,
@@ -120,5 +124,12 @@ export async function callMcdTool(name: McdReadTool, args: Record<string, unknow
 
   const result = called.rpc?.result as McpToolResult | undefined;
   if (!result) throw new Error("MCP tool returned no result");
+  if (result.isError) {
+    const detail = result.content
+      .filter((block) => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join(" ");
+    throw new Error(detail || `MCP tool ${name} failed`);
+  }
   return result;
 }
