@@ -1,0 +1,22 @@
+# dependencies
+/node_modules
+
+# Next.js
+/.next
+/out
+
+# tests
+/coverage
+
+# local secrets — never commit MCP tokens
+.env
+.env.*
+!.env.example
+*.env
+
+# logs and local tooling
+*.log
+.DS_Store
+*.pem
+.vercel
+*.tsbuildinfo
