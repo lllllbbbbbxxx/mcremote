@@ -5,7 +5,8 @@ export interface MenuProduct {
   productId: string;
   name: string;
   priceInCents: number;
-  source: "mcd-mcp";
+  source: "mcd-mcp" | "demo";
+  category?: string;
 }
 
 export interface Player {
@@ -36,6 +37,7 @@ export interface GameState {
   roomId: string;
   hostId: string;
   storeId: string;
+  catalogMode: "mcd-mcp" | "demo";
   budgetInCents: number;
   status: RoomStatus;
   expiresAt: string;
@@ -84,9 +86,9 @@ function eventId(state: GameState) {
   return `event-${state.events.length + 1}`;
 }
 
-function assertMcpProduct(product: MenuProduct) {
-  if (product.source !== "mcd-mcp") {
-    throw new GameRuleError("UNTRUSTED_PRODUCT", "餐品必须来自麦当劳 MCP 菜单");
+function assertCatalogProduct(state: GameState, product: MenuProduct) {
+  if (product.source !== state.catalogMode) {
+    throw new GameRuleError("UNTRUSTED_PRODUCT", "餐品来源与本局菜单不一致");
   }
   if (!Number.isInteger(product.priceInCents) || product.priceInCents < 0) {
     throw new GameRuleError("INVALID_PRICE", "餐品价格无效");
@@ -109,7 +111,7 @@ export function addItem(
   input: { playerId: string; product: MenuProduct; itemId: string; now: Date },
 ) {
   assertPlaying(state, input.now);
-  assertMcpProduct(input.product);
+  assertCatalogProduct(state, input.product);
   const next = clone(state);
   const player = requirePlayer(next, input.playerId);
   if (player.addTokensRemaining <= 0) {
@@ -173,7 +175,7 @@ export function swapItem(
   input: { playerId: string; itemId: string; replacement: MenuProduct; now: Date },
 ) {
   assertPlaying(state, input.now);
-  assertMcpProduct(input.replacement);
+  assertCatalogProduct(state, input.replacement);
   const next = clone(state);
   const item = requireItem(next, input.itemId);
   if (item.lockedBy) throw new GameRuleError("ITEM_LOCKED", "已锁定餐品不能替换");

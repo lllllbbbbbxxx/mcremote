@@ -26,6 +26,7 @@ beforeEach(() => {
     roomId: "room-1",
     hostId: "host",
     storeId: "store-1",
+    catalogMode: "mcd-mcp",
     budgetInCents: 3000,
     status: "playing",
     expiresAt: "2026-10-11T04:01:00.000Z",

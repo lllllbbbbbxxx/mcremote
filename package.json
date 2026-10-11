@@ -1,6 +1,6 @@
 {
   "name": "mcremote",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A multiplayer McDonald's ordering game powered by the official McDonald's China MCP.",
   "scripts": {
@@ -10,7 +10,9 @@
     "lint": "biome check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke:mvp": "node scripts/smoke-mvp.mjs",
+    "test:mcp": "node scripts/test-mcp.mjs"
   },
   "engines": {
     "node": ">=22.12.0"

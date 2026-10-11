@@ -90,7 +90,7 @@ export async function callMcdTool(name: McdReadTool, args: Record<string, unknow
     params: {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: "mcremote", version: "0.1.0" },
+      clientInfo: { name: "mcremote", version: "0.2.0" },
     },
   });
   if (!initialized.sessionId) throw new Error("MCP server did not issue a session id");

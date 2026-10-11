@@ -1,0 +1,192 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { CatalogMode, StoreOption } from "@/types/mvp";
+
+interface ApiError {
+  error?: string;
+}
+
+async function jsonRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  const body = (await response.json()) as T & ApiError;
+  if (!response.ok) throw new Error(body.error || "请求失败，请稍后再试");
+  return body;
+}
+
+export function CreateRoom() {
+  const [mode, setMode] = useState<CatalogMode>("demo");
+  const [modeMessage, setModeMessage] = useState("正在检查麦当劳 MCP…");
+  const [city, setCity] = useState("上海");
+  const [keyword, setKeyword] = useState("人民广场");
+  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [selectedStore, setSelectedStore] = useState<StoreOption | null>(null);
+  const [hostNickname, setHostNickname] = useState("房主");
+  const [budgetYuan, setBudgetYuan] = useState(50);
+  const [durationSeconds, setDurationSeconds] = useState(60);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    jsonRequest<{ mode: CatalogMode; message: string }>("/api/catalog/status")
+      .then((status) => {
+        setMode(status.mode);
+        setModeMessage(status.message);
+      })
+      .catch(() => setModeMessage("无法读取 MCP 配置状态"));
+  }, []);
+
+  async function findStores() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await jsonRequest<{ mode: CatalogMode; stores: StoreOption[] }>(
+        "/api/catalog/stores",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ city, keyword }),
+        },
+      );
+      setMode(result.mode);
+      setStores(result.stores);
+      setSelectedStore(result.stores[0] ?? null);
+      if (!result.stores.length) setError("附近没有找到当前可用门店，请换个关键词");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "查询门店失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedStore) {
+      setError("请先查询并选择门店");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await jsonRequest<{ token: string; snapshot: { roomId: string } }>(
+        "/api/rooms",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            hostNickname,
+            budgetYuan,
+            durationSeconds,
+            store: selectedStore,
+          }),
+        },
+      );
+      localStorage.setItem(`mcremote:${result.snapshot.roomId}`, result.token);
+      window.location.assign(`/room/${result.snapshot.roomId}?token=${result.token}`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "创建房间失败");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="create-card" onSubmit={submit}>
+      <div className={`mode-banner mode-${mode}`}>
+        <span>{mode === "mcp" ? "● MCP LIVE" : "● DEMO MODE"}</span>
+        <p>{modeMessage}</p>
+      </div>
+
+      <div className="form-step">
+        <span className="step-number">1</span>
+        <div className="step-content">
+          <div className="form-label">找到目标门店</div>
+          <div className="field-row">
+            <input
+              value={city}
+              onChange={(event) => setCity(event.target.value)}
+              placeholder="城市"
+            />
+            <input
+              value={keyword}
+              onChange={(event) => setKeyword(event.target.value)}
+              placeholder="商圈 / 地标"
+            />
+            <button className="small-button" type="button" onClick={findStores} disabled={busy}>
+              查询
+            </button>
+          </div>
+          {stores.length > 0 && (
+            <div className="store-list">
+              {stores.map((store) => (
+                <button
+                  type="button"
+                  className={
+                    selectedStore?.storeCode === store.storeCode ? "store selected" : "store"
+                  }
+                  key={store.storeCode}
+                  onClick={() => setSelectedStore(store)}
+                >
+                  <b>{store.storeName}</b>
+                  <span>{store.address}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="form-step">
+        <span className="step-number">2</span>
+        <div className="step-content two-fields">
+          <label>
+            你的昵称
+            <input
+              value={hostNickname}
+              onChange={(event) => setHostNickname(event.target.value)}
+              maxLength={20}
+            />
+          </label>
+          <label>
+            总预算（元）
+            <input
+              type="number"
+              value={budgetYuan}
+              min={10}
+              max={1000}
+              step={1}
+              onChange={(event) => setBudgetYuan(Number(event.target.value))}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="form-step">
+        <span className="step-number">3</span>
+        <div className="step-content">
+          <div className="form-label">游戏时长</div>
+          <div className="duration-options">
+            {[60, 90, 120].map((seconds) => (
+              <button
+                type="button"
+                className={durationSeconds === seconds ? "duration selected" : "duration"}
+                key={seconds}
+                onClick={() => setDurationSeconds(seconds)}
+              >
+                {seconds}s
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+      <button className="button primary create-submit" type="submit" disabled={busy}>
+        {busy ? "处理中…" : "CREATE ROOM →"}
+      </button>
+    </form>
+  );
+}
