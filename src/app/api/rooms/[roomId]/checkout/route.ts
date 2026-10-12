@@ -7,7 +7,7 @@ export async function POST(request: Request, context: { params: Promise<{ roomId
   try {
     const { roomId } = await context.params;
     const token = playerToken(request);
-    const { record, items } = prepareCheckout(roomId, token);
+    const { record, items } = await prepareCheckout(roomId, token);
     const currentMenu = await getMenu(record.store);
     const availableCodes = new Set(currentMenu.products.map((product) => product.productId));
     const menuAvailable = items.every((item) => availableCodes.has(item.productId));
@@ -16,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ roomId
     if (!menuAvailable) {
       check.message = `${check.message} 部分餐品已不在当前可售菜单中。`;
     }
-    return NextResponse.json(savePriceCheck(roomId, token, check));
+    return NextResponse.json(await savePriceCheck(roomId, token, check));
   } catch (error) {
     return apiError(error);
   }

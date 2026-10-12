@@ -32,7 +32,7 @@ export async function POST(request: Request, context: { params: Promise<{ roomId
   try {
     const { roomId } = await context.params;
     const action = parseAction(await readObject(request));
-    return NextResponse.json(roomAction(roomId, playerToken(request), action));
+    return NextResponse.json(await roomAction(roomId, playerToken(request), action));
   } catch (error) {
     return apiError(error);
   }

@@ -4,22 +4,25 @@
 
 给朋友一笔预算，让他们决定你这一顿麦当劳吃什么。McRemote 是一款基于麦当劳 MCP 的轻量多人点餐游戏：房主选择真实门店并设定预算，朋友在当前可售菜单中加购，并用 `DELETE`、`SWAP`、`LOCK` 卡制造一点善意的混乱。
 
+线上体验：<https://mcremote.vercel.app>
+
 配置 Token 后，门店、菜单与价格来自麦当劳 MCP；预算永远不能超；最终核价只能由房主本人确认。没有 Token 时会进入明确标注的 Demo 模式，静态演示菜单不会冒充实时数据。
 
 ## 当前状态
 
-这是可本地试玩的基础 MVP，已经包含：
+这是可直接部署的基础 MVP，已经包含：
 
 - Create Room / Waiting Room / Game Room / Damage Report 完整流程
 - 分享链接、免登录昵称加入和 1 秒轮询的多人状态同步
 - ADD / DELETE / SWAP / LOCK、实时预算、倒计时和操作记录
 - 房主专属结算，以及结算前菜单供应状态与官方价格二次核验
+- Upstash Redis 房间持久化与原子并发更新，适配 Vercel Serverless 多实例
 - 麦当劳 MCP Streamable HTTP 服务端客户端与只读 Tool allowlist
 - 无 Token 时可试玩、且明确标注数据来源的 Demo 模式
 - 覆盖关键规则的自动化测试
 - 参赛必需声明、MCP 接入说明和脱敏配置
 
-当前房间保存在单个 Node.js 进程内，服务重启后会清空，适合 MVP 演示。上线前将替换为持久化数据库和 WebSocket/SSE；真实 `create-order` 暂不启用，避免朋友端或未完成权限加固的页面产生订单。
+配置 Upstash Redis 后，房间会持久保存 24 小时；未配置 Redis 的本地开发环境会自动使用内存存储。真实 `create-order` 暂不启用，避免朋友端或未完成权限加固的页面产生订单。
 
 ## 目标用户
 
@@ -60,6 +63,11 @@ MCD_MCP_URL=https://mcp.mcd.cn
 
 不要把 Token 写入源码、`mcp-config.example.json` 或任何提交。
 
+部署到 Vercel 时，还需通过 Upstash 集成或项目环境变量配置
+`UPSTASH_REDIS_REST_URL` 与 `UPSTASH_REDIS_REST_TOKEN`。Vercel Marketplace 也可能注入兼容的
+`KV_REST_API_URL` 与 `KV_REST_API_TOKEN`。生产环境会强制要求持久化存储，避免 Serverless
+实例切换时丢失房间。
+
 ## 常用命令
 
 ```bash
@@ -97,7 +105,7 @@ src/
 ├── lib/
 │   ├── catalog.ts              # MCP 数据标准化和 Demo 隔离
 │   ├── mcd-mcp/client.ts       # Streamable HTTP MCP 客户端
-│   └── room-store.ts           # MVP 内存房间状态
+│   └── room-store.ts           # Upstash Redis / 本地内存房间状态
 └── types/mvp.ts                # 前后端共享 DTO
 ```
 
@@ -110,7 +118,8 @@ src/
 - [x] Create Room / Waiting Room / Game Room / Damage Report
 - [x] MVP 多人同步（1 秒轮询）
 - [x] 下单前供应状态与价格二次核验
-- [ ] 房间数据持久化与 WebSocket / SSE 实时同步
+- [x] 房间数据持久化与原子并发更新
+- [ ] WebSocket / SSE 实时同步
 - [ ] 房主身份校验和明确确认后的 `create-order`
 - [ ] UI 视觉优化、Demo GIF、部署地址与报名 Issue
 

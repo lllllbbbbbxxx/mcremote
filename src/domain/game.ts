@@ -7,6 +7,8 @@ export interface MenuProduct {
   priceInCents: number;
   source: "mcd-mcp" | "demo";
   category?: string;
+  imageUrl?: string;
+  tags?: string[];
 }
 
 export interface Player {

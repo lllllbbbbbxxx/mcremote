@@ -16,17 +16,21 @@ interface McdStore {
   beCode?: string;
   storeName?: string;
   address?: string;
-  distance?: string;
+  distance?: string | number;
   businessStatus?: boolean;
 }
 
 interface McdMeal {
   name?: string;
+  image?: string;
   currentPrice?: string | number;
 }
 
 interface McdMenuData {
-  categories?: Array<{ name?: string; meals?: Array<{ code?: string }> }>;
+  categories?: Array<{
+    name?: string;
+    meals?: Array<{ code?: string; tags?: string[] }>;
+  }>;
   meals?: Record<string, McdMeal>;
 }
 
@@ -108,6 +112,23 @@ export function extractToolPayload<T>(result: McpToolResult): McdEnvelope<T> {
   throw new Error("麦当劳 MCP 未返回可解析的 JSON 数据");
 }
 
+function trustedMenuImage(value: string | undefined) {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "menu-img.mcd.cn" ||
+      !url.pathname.startsWith("/pcm/prod/menu/")
+    ) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 function assertSuccessful<T>(payload: McdEnvelope<T>) {
   if (payload.success === false || (payload.code && payload.code >= 400)) {
     throw new Error(payload.message || `麦当劳 MCP 返回错误 ${payload.code}`);
@@ -140,7 +161,7 @@ export async function searchStores(city: string, keyword: string) {
         beCode: store.beCode || "",
         storeName: store.storeName,
         address: store.address || "地址以麦当劳 MCP 返回为准",
-        distance: store.distance,
+        distance: store.distance === undefined ? undefined : String(store.distance),
         businessStatus: true,
         source: "mcp",
       },
@@ -165,9 +186,12 @@ export async function getMenu(store: StoreOption) {
   });
   const data = assertSuccessful(extractToolPayload<McdMenuData>(result));
   const categoryByCode = new Map<string, string>();
+  const tagsByCode = new Map<string, string[]>();
   for (const category of data.categories ?? []) {
     for (const meal of category.meals ?? []) {
-      if (meal.code) categoryByCode.set(meal.code, category.name || "其他");
+      if (!meal.code) continue;
+      if (!categoryByCode.has(meal.code)) categoryByCode.set(meal.code, category.name || "其他");
+      if (meal.tags?.length) tagsByCode.set(meal.code, meal.tags.filter(Boolean).slice(0, 3));
     }
   }
   const products = Object.entries(data.meals ?? {})
@@ -179,6 +203,8 @@ export async function getMenu(store: StoreOption) {
         name: meal.name,
         priceInCents: Math.round(price * 100),
         category: categoryByCode.get(productId) || "其他",
+        imageUrl: trustedMenuImage(meal.image),
+        tags: tagsByCode.get(productId),
         source: "mcd-mcp",
       };
     })

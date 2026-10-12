@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     const { mode, products } = await getMenu(store);
     const normalizedStore = { ...store, source: mode };
     const budgetYuan = Number(body.budgetYuan);
-    const result = createRoom({
+    const result = await createRoom({
       hostNickname: typeof body.hostNickname === "string" ? body.hostNickname : "",
       budgetInCents: Math.round(budgetYuan * 100),
       durationSeconds: Number(body.durationSeconds),

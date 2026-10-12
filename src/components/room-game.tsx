@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { MenuProduct } from "@/domain/game";
 import type { RoomSnapshot } from "@/types/mvp";
@@ -34,6 +35,9 @@ export function RoomGame({ roomId }: { roomId: string }) {
   const [now, setNow] = useState(Date.now());
   const [swapTarget, setSwapTarget] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [activeCategory, setActiveCategory] = useState("全部");
+  const [menuSearch, setMenuSearch] = useState("");
+  const [cartOpen, setCartOpen] = useState(false);
 
   const loadRoom = useCallback(
     async (activeToken: string) => {
@@ -59,14 +63,19 @@ export function RoomGame({ roomId }: { roomId: string }) {
       .finally(() => setLoading(false));
   }, [loadRoom, roomId]);
 
+  const roomStatus = snapshot?.status;
+
   useEffect(() => {
-    if (!snapshot) return;
-    const interval = window.setInterval(() => {
-      setNow(Date.now());
-      loadRoom(token).catch(() => undefined);
-    }, 1000);
+    if (roomStatus !== "waiting" && roomStatus !== "playing") return;
+    const interval = window.setInterval(
+      () => {
+        setNow(Date.now());
+        loadRoom(token).catch(() => undefined);
+      },
+      roomStatus === "playing" ? 1000 : 2000,
+    );
     return () => window.clearInterval(interval);
-  }, [loadRoom, snapshot, token]);
+  }, [loadRoom, roomStatus, token]);
 
   const secondsLeft = snapshot
     ? Math.max(0, Math.ceil((new Date(snapshot.expiresAt).getTime() - now) / 1000))
@@ -80,6 +89,21 @@ export function RoomGame({ roomId }: { roomId: string }) {
     () => new Map(snapshot?.menu.map((product) => [product.productId, product.name]) ?? []),
     [snapshot?.menu],
   );
+  const categories = useMemo(
+    () => ["全部", ...new Set((snapshot?.menu ?? []).map((product) => product.category || "其他"))],
+    [snapshot?.menu],
+  );
+  const visibleMenu = useMemo(() => {
+    const query = menuSearch.trim().toLowerCase();
+    return (snapshot?.menu ?? []).filter((product) => {
+      const categoryMatch = activeCategory === "全部" || product.category === activeCategory;
+      const searchMatch =
+        !query ||
+        product.name.toLowerCase().includes(query) ||
+        product.tags?.some((tag) => tag.toLowerCase().includes(query));
+      return categoryMatch && searchMatch;
+    });
+  }, [activeCategory, menuSearch, snapshot?.menu]);
 
   async function join(event: React.FormEvent) {
     event.preventDefault();
@@ -274,8 +298,37 @@ export function RoomGame({ roomId }: { roomId: string }) {
               </button>
             </div>
           )}
+          <div className="menu-tools">
+            <label className="menu-search">
+              <span aria-hidden="true">⌕</span>
+              <input
+                type="search"
+                value={menuSearch}
+                onChange={(event) => setMenuSearch(event.target.value)}
+                placeholder={`搜索 ${snapshot.menu.length} 个真实餐品`}
+                aria-label="搜索菜单"
+              />
+            </label>
+            <fieldset className="category-strip">
+              <legend className="sr-only">菜单分类</legend>
+              {categories.map((category) => (
+                <button
+                  type="button"
+                  className={activeCategory === category ? "category-chip active" : "category-chip"}
+                  aria-pressed={activeCategory === category}
+                  key={category}
+                  onClick={() => setActiveCategory(category)}
+                >
+                  {category}
+                </button>
+              ))}
+            </fieldset>
+            <small>
+              显示 {visibleMenu.length} / {snapshot.menu.length} 项
+            </small>
+          </div>
           <div className="menu-grid">
-            {snapshot.menu.map((product) => (
+            {visibleMenu.map((product) => (
               <MenuCard
                 key={product.productId}
                 product={product}
@@ -285,10 +338,37 @@ export function RoomGame({ roomId }: { roomId: string }) {
                 onAct={act}
               />
             ))}
+            {!visibleMenu.length && (
+              <div className="menu-empty">
+                <b>没有匹配的餐品</b>
+                <span>换个关键词或切换到其他分类。</span>
+              </div>
+            )}
           </div>
         </div>
 
-        <aside className="cart-panel">
+        {cartOpen && (
+          <button
+            className="cart-backdrop"
+            type="button"
+            aria-label="关闭购物车"
+            onClick={() => setCartOpen(false)}
+          />
+        )}
+        <aside
+          className={cartOpen ? "cart-panel mobile-open" : "cart-panel"}
+          id="shared-cart"
+          aria-label="共享购物车"
+        >
+          <button
+            className="cart-close"
+            type="button"
+            aria-label="关闭购物车"
+            onClick={() => setCartOpen(false)}
+          >
+            <span>共享购物车</span>
+            <b>×</b>
+          </button>
           <div className="budget-block">
             <span>剩余预算</span>
             <strong>{money(snapshot.remainingInCents)}</strong>
@@ -379,6 +459,13 @@ export function RoomGame({ roomId }: { roomId: string }) {
           </div>
         </aside>
       </section>
+      <button className="mobile-cart-trigger" type="button" onClick={() => setCartOpen(true)}>
+        <span>
+          购物车 <b>{snapshot.cart.length}</b>
+        </span>
+        <strong>{money(snapshot.totalInCents)}</strong>
+        <small>查看订单 ↑</small>
+      </button>
       {error && <Toast message={error} />}
     </main>
   );
@@ -462,21 +549,40 @@ function MenuCard({
   );
   return (
     <article className="menu-card">
-      <span>{product.category || "餐品"}</span>
-      <h3>{product.name}</h3>
-      <div>
-        <b>{money(product.priceInCents)}</b>
-        <button
-          type="button"
-          disabled={busy || (swapTarget ? !canSwap : !canAdd)}
-          onClick={() =>
-            swapTarget
-              ? onAct({ type: "swap", itemId: swapTarget, productId: product.productId })
-              : onAct({ type: "add", productId: product.productId })
-          }
-        >
-          {swapTarget ? "换成它" : "ADD +"}
-        </button>
+      <div className="menu-card-image">
+        {product.imageUrl ? (
+          <Image
+            src={product.imageUrl}
+            alt=""
+            width={320}
+            height={320}
+            unoptimized
+            sizes="(max-width: 700px) 46vw, (max-width: 1100px) 28vw, 220px"
+          />
+        ) : (
+          <span className="menu-image-fallback" aria-hidden="true">
+            M
+          </span>
+        )}
+        {product.tags?.[0] && <em>{product.tags[0]}</em>}
+      </div>
+      <div className="menu-card-content">
+        <span>{product.category || "餐品"}</span>
+        <h3>{product.name}</h3>
+        <div>
+          <b>{money(product.priceInCents)}</b>
+          <button
+            type="button"
+            disabled={busy || (swapTarget ? !canSwap : !canAdd)}
+            onClick={() =>
+              swapTarget
+                ? onAct({ type: "swap", itemId: swapTarget, productId: product.productId })
+                : onAct({ type: "add", productId: product.productId })
+            }
+          >
+            {swapTarget ? "换成它" : "ADD +"}
+          </button>
+        </div>
       </div>
     </article>
   );

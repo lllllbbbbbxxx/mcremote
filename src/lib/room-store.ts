@@ -22,18 +22,135 @@ interface RoomRecord {
   menu: MenuProduct[];
   durationSeconds: number;
   createdAt: string;
-  playerTokens: Map<string, string>;
+  playerTokens: Record<string, string>;
   priceCheck?: PriceCheck;
+  revision: number;
 }
 
 declare global {
   var __mcremoteRooms: Map<string, RoomRecord> | undefined;
 }
 
-const rooms = globalThis.__mcremoteRooms ?? new Map<string, RoomRecord>();
-globalThis.__mcremoteRooms = rooms;
+const localRooms = globalThis.__mcremoteRooms ?? new Map<string, RoomRecord>();
+globalThis.__mcremoteRooms = localRooms;
 
 const cards: SpecialCard[] = ["delete", "swap", "lock"];
+const roomTtlSeconds = 24 * 60 * 60;
+const maxMutationAttempts = 6;
+
+type RedisResult<T> = { result?: T; error?: string };
+
+function redisCredentials() {
+  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+  return url && token ? { url: url.replace(/\/$/, ""), token } : null;
+}
+
+function roomKey(id: string) {
+  return `mcremote:room:${id.toUpperCase()}`;
+}
+
+async function redisCommand<T>(command: Array<string | number>) {
+  const credentials = redisCredentials();
+  if (!credentials) throw new Error("Redis 持久化环境变量未配置");
+  const response = await fetch(credentials.url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${credentials.token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+    cache: "no-store",
+  });
+  const payload = (await response.json()) as RedisResult<T>;
+  if (!response.ok || payload.error) {
+    throw new Error(`Redis 请求失败：${payload.error ?? response.statusText}`);
+  }
+  return payload.result as T;
+}
+
+function requirePersistenceInProduction() {
+  if (process.env.VERCEL && !redisCredentials()) {
+    throw new Error("生产环境缺少 UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN");
+  }
+}
+
+async function loadRecord(id: string) {
+  const normalizedId = id.toUpperCase();
+  const credentials = redisCredentials();
+  let record: RoomRecord | undefined;
+  if (credentials) {
+    const serialized = await redisCommand<string | null>(["GET", roomKey(normalizedId)]);
+    record = serialized ? (JSON.parse(serialized) as RoomRecord) : undefined;
+  } else {
+    requirePersistenceInProduction();
+    record = localRooms.get(normalizedId);
+  }
+  if (!record) throw new GameRuleError("ROOM_NOT_FOUND", "房间不存在或已过期");
+  return record;
+}
+
+async function createRecord(record: RoomRecord) {
+  if (redisCredentials()) {
+    return (
+      (await redisCommand<string | null>([
+        "SET",
+        roomKey(record.game.roomId),
+        JSON.stringify(record),
+        "EX",
+        roomTtlSeconds,
+        "NX",
+      ])) === "OK"
+    );
+  }
+  requirePersistenceInProduction();
+  if (localRooms.has(record.game.roomId)) return false;
+  localRooms.set(record.game.roomId, structuredClone(record));
+  return true;
+}
+
+const compareAndSetScript = `
+local current = redis.call("GET", KEYS[1])
+if not current then return -1 end
+local decoded = cjson.decode(current)
+if tonumber(decoded.revision) ~= tonumber(ARGV[1]) then return 0 end
+redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+return 1
+`;
+
+async function saveRecord(record: RoomRecord, expectedRevision: number) {
+  if (redisCredentials()) {
+    return await redisCommand<number>([
+      "EVAL",
+      compareAndSetScript,
+      1,
+      roomKey(record.game.roomId),
+      expectedRevision,
+      JSON.stringify(record),
+      roomTtlSeconds,
+    ]);
+  }
+  requirePersistenceInProduction();
+  const current = localRooms.get(record.game.roomId);
+  if (!current) return -1;
+  if (current.revision !== expectedRevision) return 0;
+  localRooms.set(record.game.roomId, structuredClone(record));
+  return 1;
+}
+
+async function mutateRecord<T>(id: string, mutation: (record: RoomRecord) => T) {
+  for (let attempt = 0; attempt < maxMutationAttempts; attempt += 1) {
+    const current = await loadRecord(id);
+    const expectedRevision = current.revision;
+    const next = structuredClone(current);
+    const result = mutation(next);
+    next.revision = expectedRevision + 1;
+    const saved = await saveRecord(next, expectedRevision);
+    if (saved === 1) return { record: next, result };
+    if (saved === -1) throw new GameRuleError("ROOM_NOT_FOUND", "房间不存在或已过期");
+  }
+  throw new GameRuleError("ROOM_BUSY", "多人同时操作，请重试");
+}
 
 function roomId() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -51,21 +168,20 @@ function nickname(value: string) {
   return cleaned;
 }
 
-function getRecord(id: string) {
-  const record = rooms.get(id.toUpperCase());
-  if (!record) throw new GameRuleError("ROOM_NOT_FOUND", "房间不存在或服务已重启");
+function finishExpiredGame(record: RoomRecord) {
   if (record.game.status === "playing" && Date.now() >= new Date(record.game.expiresAt).getTime()) {
     record.game = finishGame(record.game, new Date());
+    return true;
   }
-  return record;
+  return false;
 }
 
 function viewerId(record: RoomRecord, token: string | null) {
   if (!token) return null;
-  for (const [playerId, storedToken] of record.playerTokens) {
-    if (storedToken === token) return playerId;
-  }
-  return null;
+  return (
+    Object.entries(record.playerTokens).find(([, storedToken]) => storedToken === token)?.[0] ??
+    null
+  );
 }
 
 function publicSnapshot(record: RoomRecord, token: string | null): RoomSnapshot {
@@ -89,7 +205,7 @@ function publicSnapshot(record: RoomRecord, token: string | null): RoomSnapshot 
   };
 }
 
-export function createRoom(input: {
+export async function createRoom(input: {
   hostNickname: string;
   budgetInCents: number;
   durationSeconds: number;
@@ -107,70 +223,79 @@ export function createRoom(input: {
     throw new GameRuleError("INVALID_DURATION", "游戏时长仅支持 60 / 90 / 120 秒");
   }
   if (!input.menu.length) throw new GameRuleError("EMPTY_MENU", "门店菜单为空");
-  const id = roomId();
-  const hostId = randomUUID();
-  const token = playerToken();
-  const record: RoomRecord = {
-    game: {
-      roomId: id,
-      hostId,
-      storeId: input.store.storeCode,
-      catalogMode: input.store.source === "mcp" ? "mcd-mcp" : "demo",
-      budgetInCents: input.budgetInCents,
-      status: "waiting",
-      expiresAt: new Date(Date.now() + input.durationSeconds * 1000).toISOString(),
-      players: [
-        {
-          id: hostId,
-          nickname: nickname(input.hostNickname),
-          isHost: true,
-          addTokensRemaining: 0,
-          specialCard: null,
-          specialCardUsed: false,
-        },
-      ],
-      cart: [],
-      events: [],
-    },
-    store: input.store,
-    menu: input.menu,
-    durationSeconds: input.durationSeconds,
-    createdAt: new Date().toISOString(),
-    playerTokens: new Map([[hostId, token]]),
-  };
-  rooms.set(id, record);
-  return { token, snapshot: publicSnapshot(record, token) };
+  const hostName = nickname(input.hostNickname);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const id = roomId();
+    const hostId = randomUUID();
+    const token = playerToken();
+    const record: RoomRecord = {
+      game: {
+        roomId: id,
+        hostId,
+        storeId: input.store.storeCode,
+        catalogMode: input.store.source === "mcp" ? "mcd-mcp" : "demo",
+        budgetInCents: input.budgetInCents,
+        status: "waiting",
+        expiresAt: new Date(Date.now() + input.durationSeconds * 1000).toISOString(),
+        players: [
+          {
+            id: hostId,
+            nickname: hostName,
+            isHost: true,
+            addTokensRemaining: 0,
+            specialCard: null,
+            specialCardUsed: false,
+          },
+        ],
+        cart: [],
+        events: [],
+      },
+      store: input.store,
+      menu: input.menu,
+      durationSeconds: input.durationSeconds,
+      createdAt: new Date().toISOString(),
+      playerTokens: { [hostId]: token },
+      revision: 1,
+    };
+    if (await createRecord(record)) return { token, snapshot: publicSnapshot(record, token) };
+  }
+  throw new Error("无法生成唯一房间号，请重试");
 }
 
-export function joinRoom(id: string, rawNickname: string) {
-  const record = getRecord(id);
-  if (record.game.status !== "waiting") {
-    throw new GameRuleError("ROOM_ALREADY_STARTED", "本局已经开始，不能再加入");
-  }
-  if (record.game.players.length >= 12) {
-    throw new GameRuleError("ROOM_FULL", "房间最多 12 人");
-  }
+export async function joinRoom(id: string, rawNickname: string) {
   const name = nickname(rawNickname);
-  if (record.game.players.some((player) => player.nickname.toLowerCase() === name.toLowerCase())) {
-    throw new GameRuleError("NICKNAME_TAKEN", "这个昵称已经有人用了");
-  }
-  const playerId = randomUUID();
-  const token = playerToken();
-  const card = cards[randomBytes(1)[0] % cards.length];
-  record.game.players.push({
-    id: playerId,
-    nickname: name,
-    isHost: false,
-    addTokensRemaining: 2,
-    specialCard: card,
-    specialCardUsed: false,
+  const { record, result } = await mutateRecord(id, (draft) => {
+    finishExpiredGame(draft);
+    if (draft.game.status !== "waiting")
+      throw new GameRuleError("ROOM_ALREADY_STARTED", "本局已经开始，不能再加入");
+    if (draft.game.players.length >= 12) throw new GameRuleError("ROOM_FULL", "房间最多 12 人");
+    if (draft.game.players.some((player) => player.nickname.toLowerCase() === name.toLowerCase())) {
+      throw new GameRuleError("NICKNAME_TAKEN", "这个昵称已经有人用了");
+    }
+    const playerId = randomUUID();
+    const token = playerToken();
+    const card = cards[randomBytes(1)[0] % cards.length];
+    draft.game.players.push({
+      id: playerId,
+      nickname: name,
+      isHost: false,
+      addTokensRemaining: 2,
+      specialCard: card,
+      specialCardUsed: false,
+    });
+    draft.playerTokens[playerId] = token;
+    return token;
   });
-  record.playerTokens.set(playerId, token);
-  return { token, snapshot: publicSnapshot(record, token) };
+  return { token: result, snapshot: publicSnapshot(record, result) };
 }
 
-export function getRoom(id: string, token: string | null) {
-  return publicSnapshot(getRecord(id), token);
+export async function getRoom(id: string, token: string | null) {
+  const record = await loadRecord(id);
+  if (!finishExpiredGame(record)) return publicSnapshot(record, token);
+  const finished = await mutateRecord(id, (draft) => {
+    finishExpiredGame(draft);
+  });
+  return publicSnapshot(finished.record, token);
 }
 
 function requireViewer(record: RoomRecord, token: string | null) {
@@ -185,7 +310,7 @@ function requireMenuProduct(record: RoomRecord, productId: string) {
   return product;
 }
 
-export function roomAction(
+export async function roomAction(
   id: string,
   token: string | null,
   action:
@@ -195,41 +320,44 @@ export function roomAction(
     | { type: "lock"; itemId: string }
     | { type: "swap"; itemId: string; productId: string },
 ) {
-  const record = getRecord(id);
-  const playerId = requireViewer(record, token);
-  const now = new Date();
-  if (action.type === "start") {
-    if (playerId !== record.game.hostId) throw new GameRuleError("HOST_ONLY", "只有房主能开始游戏");
-    if (record.game.status !== "waiting")
-      throw new GameRuleError("ROOM_NOT_WAITING", "游戏已经开始");
-    if (record.game.players.length < 2)
-      throw new GameRuleError("NEED_PLAYER", "至少邀请一位朋友再开始");
-    record.game.status = "playing";
-    record.game.expiresAt = new Date(now.getTime() + record.durationSeconds * 1000).toISOString();
-  } else if (action.type === "add") {
-    record.game = addItem(record.game, {
-      playerId,
-      product: requireMenuProduct(record, action.productId),
-      itemId: randomUUID(),
-      now,
-    });
-  } else if (action.type === "delete") {
-    record.game = deleteItem(record.game, { playerId, itemId: action.itemId, now });
-  } else if (action.type === "lock") {
-    record.game = lockItem(record.game, { playerId, itemId: action.itemId, now });
-  } else {
-    record.game = swapItem(record.game, {
-      playerId,
-      itemId: action.itemId,
-      replacement: requireMenuProduct(record, action.productId),
-      now,
-    });
-  }
+  const { record } = await mutateRecord(id, (draft) => {
+    finishExpiredGame(draft);
+    const playerId = requireViewer(draft, token);
+    const now = new Date();
+    if (action.type === "start") {
+      if (playerId !== draft.game.hostId)
+        throw new GameRuleError("HOST_ONLY", "只有房主能开始游戏");
+      if (draft.game.status !== "waiting")
+        throw new GameRuleError("ROOM_NOT_WAITING", "游戏已经开始");
+      if (draft.game.players.length < 2)
+        throw new GameRuleError("NEED_PLAYER", "至少邀请一位朋友再开始");
+      draft.game.status = "playing";
+      draft.game.expiresAt = new Date(now.getTime() + draft.durationSeconds * 1000).toISOString();
+    } else if (action.type === "add") {
+      draft.game = addItem(draft.game, {
+        playerId,
+        product: requireMenuProduct(draft, action.productId),
+        itemId: randomUUID(),
+        now,
+      });
+    } else if (action.type === "delete") {
+      draft.game = deleteItem(draft.game, { playerId, itemId: action.itemId, now });
+    } else if (action.type === "lock") {
+      draft.game = lockItem(draft.game, { playerId, itemId: action.itemId, now });
+    } else {
+      draft.game = swapItem(draft.game, {
+        playerId,
+        itemId: action.itemId,
+        replacement: requireMenuProduct(draft, action.productId),
+        now,
+      });
+    }
+  });
   return publicSnapshot(record, token);
 }
 
-export function prepareCheckout(id: string, token: string | null) {
-  const record = getRecord(id);
+export async function prepareCheckout(id: string, token: string | null) {
+  const record = await loadRecord(id);
   const playerId = requireViewer(record, token);
   beginCheckout(record.game, playerId);
   const grouped = new Map<
@@ -250,10 +378,11 @@ export function prepareCheckout(id: string, token: string | null) {
   return { record, items: [...grouped.values()] };
 }
 
-export function savePriceCheck(id: string, token: string | null, check: PriceCheck) {
-  const record = getRecord(id);
-  const playerId = requireViewer(record, token);
-  record.game = beginCheckout(record.game, playerId);
-  record.priceCheck = check;
+export async function savePriceCheck(id: string, token: string | null, check: PriceCheck) {
+  const { record } = await mutateRecord(id, (draft) => {
+    const playerId = requireViewer(draft, token);
+    draft.game = beginCheckout(draft.game, playerId);
+    draft.priceCheck = check;
+  });
   return publicSnapshot(record, token);
 }

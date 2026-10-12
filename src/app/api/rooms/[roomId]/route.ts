@@ -5,7 +5,7 @@ import { getRoom } from "@/lib/room-store";
 export async function GET(request: Request, context: { params: Promise<{ roomId: string }> }) {
   try {
     const { roomId } = await context.params;
-    return NextResponse.json(getRoom(roomId, playerToken(request)));
+    return NextResponse.json(await getRoom(roomId, playerToken(request)));
   } catch (error) {
     return apiError(error);
   }
