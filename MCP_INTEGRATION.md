@@ -10,9 +10,12 @@ McRemote 接入麦当劳中国官方托管的 MCP Server：`https://mcp.mcd.cn`�
 | `query-meals` | 创建房间 / 游戏 | 获取目标门店当前可售餐品，生成好友端唯一候选菜单 |
 | `query-meal-detail` | 后续套餐详情 | 获取套餐组成和可替换选项；已列入只读白名单 |
 | `calculate-price` | 最终结算 | 房主确认前使用官方价格重新核验整个购物车 |
-| `create-order` | 后续可选 | 仅在房主看过 Preview 并明确确认后调用；好友端永不具备该权限 |
+| `create-order` | WorkBuddy 房主结算 | 仅由房主自己的 MCP 在看过 Preview 并明确确认后调用；好友端永不具备该权限 |
+| `query-order` / `cancel-order` | WorkBuddy 订单管理 | 支付后查询或经房主确认后取消订单 |
 
-当前 MVP 已实现前三个游戏必需 Tool 的实际调用路径，并为 `query-meal-detail` 保留只读调用能力。为了避免任何客户端请求越权创建订单，`src/app/api/mcd/call/route.ts` 使用显式 allowlist，暂不暴露 `create-order`。
+公开网页的 `src/app/api/mcd/call/route.ts` 仍使用显式只读 allowlist，永不暴露
+`create-order`。安装在房主 WorkBuddy 中的 `mcremote-host` Skill 直接使用房主自己的麦当劳 MCP
+完成核价、下单、支付交接、查询与取消；McRemote 服务器不会接收房主的 MCP Token。
 
 ## 调用流程
 
@@ -27,7 +30,8 @@ McRemote 接入麦当劳中国官方托管的 MCP Server：`https://mcp.mcd.cn`�
   → query-meals 复核供应状态
   → calculate-price 复核官方价格
   → 房主查看真实订单 Preview 并明确确认
-  → create-order（接入真实下单后，仅由受保护的房主操作触发）
+  → 房主 WorkBuddy 调用 create-order
+  → 支付链接仅返回房主；支付仍需房主单独操作
 ```
 
 ## MCP 带来的业务价值

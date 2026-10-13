@@ -1,0 +1,4 @@
+interface:
+  display_name: "McRemote 房主"
+  short_description: "在 WorkBuddy 中发起真实菜单多人点餐游戏"
+  default_prompt: "使用 $mcremote-host 创建一场多人麦当劳点餐游戏。"

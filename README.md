@@ -6,6 +6,8 @@
 
 线上体验：<https://mcremote.vercel.app>
 
+WorkBuddy Skill 安装包：[dist/mcremote-host-workbuddy-skill.zip](./dist/mcremote-host-workbuddy-skill.zip)
+
 配置 Token 后，门店、菜单与价格来自麦当劳 MCP；预算永远不能超；最终核价只能由房主本人确认。没有 Token 时会进入明确标注的 Demo 模式，静态演示菜单不会冒充实时数据。
 
 ## 当前状态
@@ -22,7 +24,34 @@
 - 覆盖关键规则的自动化测试
 - 参赛必需声明、MCP 接入说明和脱敏配置
 
-配置 Upstash Redis 后，房间会持久保存 24 小时；未配置 Redis 的本地开发环境会自动使用内存存储。真实 `create-order` 暂不启用，避免朋友端或未完成权限加固的页面产生订单。
+配置 Upstash Redis 后，房间会持久保存 24 小时；未配置 Redis 的本地开发环境会自动使用内存存储。公开网页不暴露 `create-order`，真实下单只允许房主 WorkBuddy 通过自己的麦当劳 MCP 在明确确认后执行。
+
+## 最终产品形态
+
+McRemote 的正式入口是安装在房主 WorkBuddy 中的 `mcremote-host` Skill，而不是让房主在公开网页中保存麦麦凭证：
+
+```text
+房主 WorkBuddy
+├── 房主自己的麦当劳 MCP（Token、核价、下单、支付）
+├── McRemote Host Skill（开局、监控、确认门槛）
+└── 私有 hostToken
+        │
+        └── McRemote 临时房间（菜单快照、玩家、购物车、事件）
+              ├── 玩家分享链接
+              ├── 邀请 PNG / 二维码
+              └── 结算 PNG
+```
+
+玩家端永远拿不到麦麦 MCP Token、下单权限或支付链接。游戏结束后，Skill 将冻结购物车交给房主自己的麦麦 MCP 重新核价；只有房主明确确认后才创建待支付订单，支付仍由房主在 WorkBuddy 中单独完成。
+
+### 安装到 WorkBuddy
+
+1. 下载仓库中的 `dist/mcremote-host-workbuddy-skill.zip`。
+2. 在 WorkBuddy 打开“专家 · Skills · Connectors → Skills → Add Skill”，上传原始 ZIP。
+3. 若尚未连接麦当劳 MCP，按 Skill 引导在 WorkBuddy 中添加 Streamable HTTP 服务 `https://mcp.mcd.cn`，并把 Token 保存在 WorkBuddy 的凭证配置中；不要发到聊天或 McRemote 网站。
+4. 对 WorkBuddy 说：“使用 `$mcremote-host` 创建一场多人麦当劳点餐游戏。”
+
+Skill 源码位于 [`skills/mcremote-host`](./skills/mcremote-host)。
 
 ## 目标用户
 
